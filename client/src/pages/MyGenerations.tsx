@@ -27,7 +27,8 @@ export const MyGenerations = () => {
 
   useEffect(() => {
     fetchGenerations();
-  }, [])
+  }, []
+)
 
   return loading ? (
     <div className="absolute insert-0 w-full h-full flex flex-col items-center justify-center bg-black/20">
