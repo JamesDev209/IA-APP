@@ -20,7 +20,7 @@ const loadImage = (path: string, mimeType: string) => {
 
 export const createProject = async (req: Request, res: Response) => {
 
-    let tempProjectId: String
+    let tempProjectId: string;
     const { userId } = req.auth();
     let isCreditDeducted = false;
 
@@ -108,7 +108,7 @@ export const createProject = async (req: Request, res: Response) => {
 
         //image to base64 structure for ai 
         const img1base64 = loadImage(images[0].path, images[0].mimeType);
-        const img2base64 = loadImage(images[1].path, images[1].mimeType);7
+        const img2base64 = loadImage(images[1].path, images[1].mimeType); 7
 
         const prompt = {
             text: `COmbine the person and product into a ealist photo make person naturally hold use the product.
@@ -120,17 +120,88 @@ export const createProject = async (req: Request, res: Response) => {
         //generate the iiamge using ai model
         const response: any = await ai.models.generateContent({
             model,
-            contents: [img1base64, img2base64, prompt]
-        })
+            contents: [img1base64, img2base64, prompt],
+            config: generationConfig
+        });
 
+        //chek if the respuesta is valid..
+
+        if (!response.canditates?.[0]?.content?.parts) {
+            throw new Error('Invalid response from AI model');
+        }
+
+        const parts = response.canditates[0].content.parts;
+        let finalBuffer: Buffer | null = null
+
+        for (let part of parts) {
+            if (part.inlineData?.data?.length) {
+                finalBuffer = Buffer.from(part.inlineData.data, 'base64')
+            }
+        }
+
+        if (!finalBuffer) {
+            throw new Error('failed generate image');
+        }
+
+        const base64Image = `data:/image/png;base64,${finalBuffer.toString('base64')}`
+        const uploadResult = await cloudinary.uploader.upload(base64Image, { resource_type: 'image' });
+
+        await prisma.project.update({
+            where: {
+                id: project.id
+            },
+            data: {
+                generatedImage: uploadResult.secure_url,
+                isGenerating: false
+            }
+        })
+        res.json({ projectId: project.id });
 
     } catch (error: any) {
+
+        if (tempProjectId!) {
+            await prisma.project.update({
+                where: {
+                    id: tempProjectId
+                },
+                data: {
+                    isGenerating: false, error: error.message
+                }
+            })
+        }
+        if(isCreditDeducted){
+            //add credits back
+            await prisma.user.update({
+                where: {
+                    id: userId
+                },
+                data: {
+                    credits: {
+                        increment: 5
+                    }
+                }
+            })
+        }
+
         Sentry.captureException(error);
         res.status(500).json({ message: error.code || error.message })
     }
 }
 
 export const createVideo = async (req: Request, res: Response) => {
+    const { userId } = req.auth();
+    const { projectId} = req.body;
+    const isCreditDeducted = false;
+
+    const user = await prisma.user.findUnique({
+        where: {
+            id: userId
+        }
+    })
+    if(!user || user.credits < 10){
+        res.status(400).json({ message: 'Insufficient credits' })
+    }
+
     try {
 
     } catch (error: any) {
