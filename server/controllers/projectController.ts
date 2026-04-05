@@ -7,6 +7,8 @@ import path from "path";
 import fs from "fs";
 import { text } from "stream/consumers";
 import ai from "../configs/ai";
+import axios from "axios";
+import upload from "../configs/multer";
 
 
 const loadImage = (path: string, mimeType: string) => {
@@ -111,7 +113,7 @@ export const createProject = async (req: Request, res: Response) => {
         const img2base64 = loadImage(images[1].path, images[1].mimeType); 7
 
         const prompt = {
-            text: `COmbine the person and product into a ealist photo make person naturally hold use the product.
+            text: `Combine the person and product into a ealist photo make person naturally hold use the product.
             Match lighting shadows, scale and perspective.
             Make the person stand in the profesional studio lighting.
             Output ecommerce-quality pho realistic imagery ${userPrompt}`
@@ -158,8 +160,9 @@ export const createProject = async (req: Request, res: Response) => {
         res.json({ projectId: project.id });
 
     } catch (error: any) {
-
         if (tempProjectId!) {
+            //upload project status and error message
+
             await prisma.project.update({
                 where: {
                     id: tempProjectId
@@ -169,7 +172,7 @@ export const createProject = async (req: Request, res: Response) => {
                 }
             })
         }
-        if(isCreditDeducted){
+        if (isCreditDeducted) {
             //add credits back
             await prisma.user.update({
                 where: {
@@ -190,7 +193,7 @@ export const createProject = async (req: Request, res: Response) => {
 
 export const createVideo = async (req: Request, res: Response) => {
     const { userId } = req.auth();
-    const { projectId} = req.body;
+    const { projectId } = req.body;
     const isCreditDeducted = false;
 
     const user = await prisma.user.findUnique({
@@ -198,13 +201,138 @@ export const createVideo = async (req: Request, res: Response) => {
             id: userId
         }
     })
-    if(!user || user.credits < 10){
+    if (!user || user.credits < 10) {
         res.status(400).json({ message: 'Insufficient credits' })
     }
 
-    try {
+    //deduct credits for video generation
+    await prisma.user.update({
+        where: {
+            id: userId
+        },
+        data: {
+            credits: {
+                decrement: 10
+            }
+        }
+    }).then(() => { isCreditDeducted })
 
+    try {
+        const project = await prisma.project.findUnique({
+            where: {
+                id: projectId
+            },
+            include: {
+                user: true
+            }
+        })
+
+        if (!project || project.isGenerating) {
+            return res.status(400).json({ message: 'Generating in progress' })
+        }
+
+        if (project.generatedVideo) {
+            return res.status(400).json({ message: 'video already generated' })
+        }
+
+        await prisma.project.update({
+            where: {
+                id: project.id
+            },
+            data: {
+                isGenerating: true
+            }
+        });
+
+        const prompt = `make the person showcase the product wich is ${project.productName} ${project.productDescription && `and product Description: ${project.productDescription}`}`
+
+        const model = 'veo-3.1-generate-preview'
+
+        if (!project.generatedImage) {
+            throw new Error('Generate image not found')
+        }
+
+        const image = await axios.get(project.generatedImage, { responseType: 'arraybuffer' });
+
+        const imagesBytes: any = Buffer.from(image.data)
+
+        let operation: any = await ai.models.generateVideos({
+            model,
+            prompt,
+            image: {
+                imageBytes: imagesBytes.toString('base64'),
+                mimeType: 'image/png'
+            },
+            config: {
+                aspectRatio: project?.aspectRatio || '9:16',
+                numberOfVideos: 1,
+                resolution: '720',
+            }
+        })
+
+        while (!operation.done) {
+            console.log('warning for video duration to complete..');
+            await new Promise(resolve => setTimeout(resolve, 10000));
+            operation = await ai.operations.getVideosOperation({ operation: operation })
+        }
+
+        const filename = `${userId}-${Date.now()}.mp4`;
+        const filePath = path.join('videos', filename);
+
+        //create the images directory if  dosent exist
+        fs.mkdirSync('videos', { recursive: true })
+        if (!operation.response.generatedVideos) {
+            throw new Error(operation.response.raiMediaFilteredReasons[0])
+        }
+
+        //donwload the video
+        await ai.files.download({
+            file: operation.response.generatedVideos[0].video,
+            downloadPath: filePath
+        })
+
+        const uploadResult = await cloudinary.uploader.upload(filePath, {
+            resource_type: 'video'
+        })
+
+        await prisma.project.update({
+            where: { id: project.id },
+            data: {
+                generatedVideo: uploadResult.secure_url,
+                isGenerating: false
+            }
+        })
+
+        //remove video file from disk after upload
+        fs.unlinkSync(filePath);
+
+        res.json({ message: 'Video generated completed.', videoUrl: uploadResult.secure_url })
     } catch (error: any) {
+
+
+        await prisma.project.update({
+            where: {
+                id: projectId, userId
+            },
+            data: {
+                isGenerating: false, error: error.message
+            }
+        })
+
+        if (isCreditDeducted) {
+            //add credits back
+            await prisma.user.update({
+                where: {
+                    id: userId
+                },
+                data: {
+                    credits: {
+                        increment: 10
+                    }
+                }
+            })
+        }
+
         Sentry.captureException(error);
         res.status(500).json({ message: error.code || error.message })
     }
@@ -212,7 +340,12 @@ export const createVideo = async (req: Request, res: Response) => {
 
 export const getAllPublishedProjects = async (req: Request, res: Response) => {
     try {
-
+        const projects = await prisma.project.findMany({
+            where: {
+                isPublished: true
+            }
+        })
+        res.json({ projects })
     } catch (error: any) {
         Sentry.captureException(error);
         res.status(500).json({ message: error.code || error.message })
@@ -221,7 +354,26 @@ export const getAllPublishedProjects = async (req: Request, res: Response) => {
 
 export const deleteProject = async (req: Request, res: Response) => {
     try {
-
+        const { userId } = req.auth();
+        const { projectId: id } = req.params;
+        const projectId = Array.isArray(id) ? id[0] : id;
+        if (!projectId) {
+            return res.status(400).json({ message: 'Project ID is required' });
+        }
+        const project = await prisma.project.findUnique({
+            where: {
+                id: projectId, userId
+            }
+        })
+        if (!project) {
+            return res.status(400).json({ message: 'Project not found' })
+        }
+        await prisma.project.delete({
+            where: {
+                id: projectId,
+            }
+        })
+        res.json({ message: 'Project deleted' })
     } catch (error: any) {
         Sentry.captureException(error);
         res.status(500).json({ message: error.code || error.message })
