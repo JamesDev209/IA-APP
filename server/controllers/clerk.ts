@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { verifyWebhook } from '@clerk/express/webhooks'
+import { verifyWebhook } from '@clerk/express/webhooks';
 import { prisma } from "../configs/prisma";
 import * as Sentry from "@sentry/node";
 
@@ -8,8 +8,9 @@ const clerkWebhooks = async (req: Request, res: Response) => {
         const evt = await verifyWebhook(req)
         //Gueting data from request
         const { data, type } = evt;
-
         //Checking if the event is a user sign up
+
+        //el codigo aqui pregunta ::si el tipo de evento es user.created entonces se crea un usuario en la base de datos:  
 
         switch (type) {
             case 'user.created': {
@@ -40,11 +41,11 @@ const clerkWebhooks = async (req: Request, res: Response) => {
 
             case 'user.deleted': {
                 await prisma.user.delete({ where: { id: data.id } })
+
                 break;
             }
 
             case 'paymentAttempt.updated': {
-
                 if ((data.charge_type === 'recurring' || data.charge_type === 'checkout') && data.status === 'paid') {
                     const credits = { pro: 80, premium: 240, }
                     const clerkUserId = data?.payer?.user_id;
@@ -72,8 +73,10 @@ const clerkWebhooks = async (req: Request, res: Response) => {
         res.json({ message: "Webhook recieved " + type })
 
     } catch (error: any) {
+        console.error("Error al crear usuario en Neon con Prisma:", error);
+        // Captura el error con Sentry si lo tienes configurado
         Sentry.captureException(error);
-        res.status(500).send({ error: error.message })
+        //res.status(500).send({ error: error.message })
     }
 }
 

@@ -3,8 +3,16 @@ import Title from "../components/Title";
 import UploadZone from "../components/UploadZone";
 import { PrimaryButton } from "../components/Buttons";
 import { Loader2Icon, Wand2Icon } from "lucide-react";
+import { useAuth, useUser } from "@clerk/react";
+import { useNavigate } from "react-router-dom";
+import toast from "react-hot-toast";
+import api from "../configs/axios";
 
 export const Genetator = () => {
+
+  const { user } = useUser()
+  const {getToken} = useAuth()
+  const navigate = useNavigate()
 
   const [name, setName] = useState("");
   const [productName, setProductName] = useState("");
@@ -28,7 +36,36 @@ export const Genetator = () => {
 
   const handleGenerate = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if(!user) return toast.error("Please login first")
+    
+    if(!productImage || !modelImage || !name || !productName)   return toast.error("Please upload product and model images")  
 
+      try {
+        setIsGenerating(true)
+        const formData = new FormData()
+
+        formData.append("name", name)
+        formData.append("productName", productName)
+        formData.append("productDescription", productDescription)
+        formData.append("productImage", productImage)
+        formData.append("images", productImage)
+        formData.append("images", modelImage)
+        formData.append("userPrompt", userPrompt) 
+
+        const token = await getToken()
+
+        const { data } = await api.post('/api/project/create', formData, {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        })
+        toast.success(data.message);
+        navigate('/result/' + data.projectId)
+
+      } catch (error: any) {
+        setIsGenerating(false)
+        toast.error(error?.response?.data?.message || error.message )
+      }
   };
 
   return (
